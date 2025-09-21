@@ -61,7 +61,11 @@ jobs:
           sudo apt-get install -y gcc-mingw-w64-x86-64
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
+        run: |
+          # Set balanced flags for compatibility while avoiding CPU-specific issues
+          export RUSTFLAGS="-C opt-level=s"
+          cargo build --release --target ${{ matrix.target }}
+        shell: bash
 
       - name: Create release archive
         run: |
