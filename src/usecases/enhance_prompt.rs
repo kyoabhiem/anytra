@@ -1,21 +1,59 @@
 use crate::domain::llm::LLMProvider;
 use crate::domain::models::{EnhancedPrompt, EnhancementOptions, Prompt};
+use crate::domain::sequential_thinking::SequentialThinking;
+use crate::infrastructure::config::Config;
 use anyhow::Result;
+use serde_json::json;
 
 pub struct EnhancePrompt {
     provider: Box<dyn LLMProvider + Send + Sync>,
+    config: Config,
 }
 
 impl EnhancePrompt {
-    pub fn new(provider: Box<dyn LLMProvider + Send + Sync>) -> Self {
-        Self { provider }
+    pub fn new(provider: Box<dyn LLMProvider + Send + Sync>, config: Config) -> Self {
+        Self { provider, config }
     }
 
     pub async fn execute(&self, prompt: Prompt, options: EnhancementOptions) -> Result<EnhancedPrompt> {
-        let mut enhanced = self.provider.enhance(prompt, options).await?;
+        let mut enhanced = self.provider.enhance(prompt.clone(), options.clone()).await?;
         crate::domain::validation::validate_enhanced_prompt(&enhanced)?;
         let confidence = crate::domain::validation::compute_confidence(&enhanced);
         enhanced.confidence = Some(confidence);
+
+        // Handle sequential thinking if enabled
+        if options.enable_sequential_thinking.unwrap_or_else(|| self.config.sequential_thinking_enabled()) {
+            let mut sequential_thinker = SequentialThinking::new();
+            let thought_count = options.thought_count.unwrap_or(3);
+
+            for i in 1..=thought_count {
+                let is_last_thought = i == thought_count;
+                let thought_input = json!({
+                    "thought": enhanced.text,
+                    "thoughtNumber": i,
+                    "totalThoughts": thought_count,
+                    "nextThoughtNeeded": !is_last_thought
+                });
+
+                match sequential_thinker.process_thought(thought_input) {
+                    Ok(_) => {
+                        if !is_last_thought {
+                            // Generate next thought based on current enhanced text
+                            let next_options = EnhancementOptions {
+                                enable_sequential_thinking: Some(false), // Disable for intermediate steps
+                                ..options.clone()
+                            };
+                            enhanced = self.provider.enhance(Prompt { text: enhanced.text.clone() }, next_options).await?;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Sequential thinking error: {}", e);
+                        break;
+                    }
+                }
+            }
+        }
+
         Ok(enhanced)
     }
 }
@@ -24,7 +62,26 @@ impl EnhancePrompt {
 mod tests {
     use super::*;
     use crate::domain::llm::{LLMError, LLMProvider};
+    use crate::infrastructure::config::{Config, OpenRouterConfig, SequentialThinkingConfig, LoggingConfig};
     use async_trait::async_trait;
+
+    // Helper function to create test config
+    fn create_test_config() -> Config {
+        Config {
+            openrouter: OpenRouterConfig {
+                api_key: "test-key".to_string(),
+                model: "test-model".to_string(),
+                referer: None,
+                title: None,
+            },
+            sequential_thinking: SequentialThinkingConfig {
+                default_enabled: false, // Disable for tests unless explicitly needed
+            },
+            logging: LoggingConfig {
+                level: "info".to_string(),
+            },
+        }
+    }
 
     struct MockProvider;
 
@@ -59,9 +116,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_usecase_calls_provider() {
-        let usecase = EnhancePrompt::new(Box::new(MockProvider));
+        let config = create_test_config();
+        let usecase = EnhancePrompt::new(Box::new(MockProvider), config);
         let res = usecase
-            .execute(Prompt { text: "hello".into() }, EnhancementOptions::default())
+            .execute(Prompt { text: "hello".into() }, EnhancementOptions {
+                enable_sequential_thinking: Some(false), // Explicitly disable sequential thinking
+                ..Default::default()
+            })
             .await
             .unwrap();
         assert_eq!(res.text, "ENH: hello - this is a longer text with enough words to pass the validation check");
@@ -69,7 +130,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_usecase_with_options() {
-        let usecase = EnhancePrompt::new(Box::new(MockProviderWithRationale));
+        let config = create_test_config();
+        let usecase = EnhancePrompt::new(Box::new(MockProviderWithRationale), config);
         let options = EnhancementOptions {
             goal: Some("Improve clarity".to_string()),
             style: Some("concise".to_string()),
@@ -77,6 +139,8 @@ mod tests {
             level: Some(3),
             audience: Some("developers".to_string()),
             language: Some("en".to_string()),
+            enable_sequential_thinking: Some(false),
+            thought_count: Some(1),
         };
 
         let res = usecase
@@ -90,9 +154,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_usecase_with_empty_prompt() {
-        let usecase = EnhancePrompt::new(Box::new(MockProvider));
+        let config = create_test_config();
+        let usecase = EnhancePrompt::new(Box::new(MockProvider), config);
         let res = usecase
-            .execute(Prompt { text: "".into() }, EnhancementOptions::default())
+            .execute(Prompt { text: "".into() }, EnhancementOptions {
+                enable_sequential_thinking: Some(false), // Explicitly disable sequential thinking
+                ..Default::default()
+            })
             .await
             .unwrap();
         assert_eq!(res.text, "ENH:  - this is a longer text with enough words to pass the validation check");
@@ -100,7 +168,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_usecase_provider_error() {
-        let usecase = EnhancePrompt::new(Box::new(FailingProvider));
+        let config = create_test_config();
+        let usecase = EnhancePrompt::new(Box::new(FailingProvider), config);
         let result = usecase
             .execute(Prompt { text: "test".into() }, EnhancementOptions::default())
             .await;
@@ -112,7 +181,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_usecase_preserves_options() {
-        let usecase = EnhancePrompt::new(Box::new(MockProviderWithRationale));
+        let config = create_test_config();
+        let usecase = EnhancePrompt::new(Box::new(MockProviderWithRationale), config);
 
         // Test with various enhancement options
         let options = EnhancementOptions {
@@ -122,6 +192,8 @@ mod tests {
             level: Some(4),
             audience: Some("students".to_string()),
             language: Some("en".to_string()),
+            enable_sequential_thinking: Some(false),
+            thought_count: Some(1),
         };
 
         let res = usecase
@@ -134,11 +206,52 @@ mod tests {
         assert!(res.rationale.is_some());
     }
 
-    #[test]
-    fn test_usecase_creation() {
-        let provider = Box::new(MockProvider);
-        let usecase = EnhancePrompt::new(provider);
-        // Just verify it can be created without panicking
-        assert!(true); // This test mainly ensures the constructor works
+    #[tokio::test]
+    async fn test_usecase_with_sequential_thinking() {
+        let config = create_test_config();
+        let provider = MockProviderWithRationale;
+        let usecase = EnhancePrompt::new(Box::new(provider), config);
+
+        let options = EnhancementOptions {
+            goal: Some("Test sequential thinking".to_string()),
+            enable_sequential_thinking: Some(true),
+            thought_count: Some(2),
+            ..Default::default()
+        };
+
+        let res = usecase
+            .execute(Prompt { text: "test prompt".into() }, options)
+            .await
+            .unwrap();
+
+        // Sequential thinking should enhance the prompt multiple times
+        // The final result should be longer and more enhanced than the original
+        assert!(res.text.contains("ENHANCED"));
+        assert!(res.text.len() > "test prompt".len());
+    }
+
+    #[tokio::test]
+    async fn test_usecase_default_sequential_thinking_enabled() {
+        let provider = MockProviderWithRationale;
+        let config = create_test_config();
+        let usecase = EnhancePrompt::new(Box::new(provider), config);
+
+        // Test with no explicit enable_sequential_thinking setting (should default to true)
+        let options = EnhancementOptions {
+            goal: Some("Test default sequential thinking".to_string()),
+            enable_sequential_thinking: None, // Explicitly None to test default
+            thought_count: Some(2),
+            ..Default::default()
+        };
+
+        let res = usecase
+            .execute(Prompt { text: "test prompt".into() }, options)
+            .await
+            .unwrap();
+
+        // Sequential thinking should be enabled by default and enhance the prompt multiple times
+        // The final result should be longer and more enhanced than the original
+        assert!(res.text.contains("ENHANCED"));
+        assert!(res.text.len() > "test prompt".len());
     }
 }
