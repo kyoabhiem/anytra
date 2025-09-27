@@ -1,32 +1,32 @@
 use crate::domain::llm::{LLMError, LLMProvider};
 use crate::domain::models::{EnhancedPrompt, EnhancementOptions, Prompt};
 use crate::domain::fewshot;
+use crate::infrastructure::config::{Config, OpenRouterConfig};
 use async_trait::async_trait;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use tokio::time::{sleep, Duration};
-use std::env;
 
 pub struct OpenRouterClient {
     http: reqwest::Client,
-    api_key: String,
-    model: String,
-    referer: Option<String>,
-    title: Option<String>,
+    config: OpenRouterConfig,
 }
 
 impl OpenRouterClient {
-    pub fn from_env() -> Result<Self, LLMError> {
-        let api_key = env::var("OPENROUTER_API_KEY")
-            .map_err(|_| LLMError::NotConfigured("OPENROUTER_API_KEY missing".into()))?;
-        let model = env::var("OPENROUTER_MODEL").unwrap_or_else(|_| "openrouter/auto".into());
-        let referer = env::var("OPENROUTER_REFERER").ok();
-        let title = env::var("OPENROUTER_TITLE").ok();
+    pub fn new(config: OpenRouterConfig) -> Result<Self, LLMError> {
         let http = reqwest::Client::builder()
             .user_agent("anytra/0.1")
             .build()
             .map_err(|e| LLMError::RequestFailed(e.to_string()))?;
-        Ok(Self { http, api_key, model, referer, title })
+
+        Ok(Self { http, config })
+    }
+
+    /// Legacy method for backwards compatibility
+    pub fn from_env() -> Result<Self, LLMError> {
+        let config = OpenRouterConfig::from_env()
+            .map_err(|e| LLMError::NotConfigured(e))?;
+        Self::new(config)
     }
 }
 
@@ -106,7 +106,7 @@ Remember: Output ONLY the enhanced prompt. Nothing else.";
         }
 
         let payload = ChatRequest {
-            model: &self.model,
+            model: &self.config.model,
             messages: vec![
                 ChatMessage { role: "system", content: system },
                 ChatMessage { role: "user", content: &user },
@@ -115,12 +115,12 @@ Remember: Output ONLY the enhanced prompt. Nothing else.";
         };
 
         let mut headers = HeaderMap::new();
-        headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", self.api_key)).map_err(|e| LLMError::RequestFailed(e.to_string()))?);
+        headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", self.config.api_key)).map_err(|e| LLMError::RequestFailed(e.to_string()))?);
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        if let Some(ref referer) = self.referer {
+        if let Some(ref referer) = self.config.referer {
             headers.insert("HTTP-Referer", HeaderValue::from_str(referer).map_err(|e| LLMError::RequestFailed(e.to_string()))?);
         }
-        if let Some(ref title) = self.title {
+        if let Some(ref title) = self.config.title {
             headers.insert("X-Title", HeaderValue::from_str(title).map_err(|e| LLMError::RequestFailed(e.to_string()))?);
         }
 
@@ -196,10 +196,10 @@ mod tests {
 
         let client = OpenRouterClient::from_env().unwrap();
 
-        assert_eq!(client.api_key, "test-api-key");
-        assert_eq!(client.model, "test-model");
-        assert_eq!(client.referer.as_ref().unwrap(), "test-referer");
-        assert_eq!(client.title.as_ref().unwrap(), "test-title");
+        assert_eq!(client.config.api_key, "test-api-key");
+        assert_eq!(client.config.model, "test-model");
+        assert_eq!(client.config.referer.as_ref().unwrap(), "test-referer");
+        assert_eq!(client.config.title.as_ref().unwrap(), "test-title");
 
         // Restore original environment
         if let Some(key) = original_api_key {
@@ -242,7 +242,7 @@ mod tests {
         assert!(result.is_err());
 
         if let Err(LLMError::NotConfigured(msg)) = result {
-            assert_eq!(msg, "OPENROUTER_API_KEY missing");
+            assert_eq!(msg, "OPENROUTER_API_KEY environment variable is required");
         } else {
             panic!("Expected NotConfigured error");
         }
@@ -276,10 +276,10 @@ mod tests {
 
         let client = OpenRouterClient::from_env().unwrap();
 
-        assert_eq!(client.api_key, "test-api-key");
-        assert_eq!(client.model, "openrouter/auto"); // Default model
-        assert!(client.referer.is_none());
-        assert!(client.title.is_none());
+        assert_eq!(client.config.api_key, "test-api-key");
+        assert_eq!(client.config.model, "openrouter/auto"); // Default model
+        assert!(client.config.referer.is_none());
+        assert!(client.config.title.is_none());
 
         // Restore original environment
         if let Some(key) = original_api_key {

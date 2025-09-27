@@ -25,6 +25,12 @@ pub struct EnhancementOptions {
     /// optional language code for output (e.g., en, id, es)
     #[serde(default)]
     pub language: Option<String>,
+    /// enable sequential thinking for step-by-step reasoning
+    #[serde(default)]
+    pub enable_sequential_thinking: Option<bool>,
+    /// number of thoughts to generate (default: 3)
+    #[serde(default)]
+    pub thought_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +86,8 @@ mod tests {
             level: Some(3),
             audience: Some("developers".to_string()),
             language: Some("en".to_string()),
+            enable_sequential_thinking: Some(false),
+            thought_count: Some(1),
         };
 
         assert_eq!(options.goal.as_deref(), Some("Create a clear instruction"));
@@ -99,10 +107,12 @@ mod tests {
             level: Some(2),
             audience: None,
             language: None,
+            enable_sequential_thinking: Some(false),
+            thought_count: Some(1),
         };
 
         let json = serde_json::to_string(&options).unwrap();
-        let expected = r#"{"goal":"Test goal","style":null,"tone":null,"level":2,"audience":null,"language":null}"#;
+        let expected = r#"{"goal":"Test goal","style":null,"tone":null,"level":2,"audience":null,"language":null,"enable_sequential_thinking":false,"thought_count":1}"#;
         assert_eq!(json, expected);
 
         let deserialized: EnhancementOptions = serde_json::from_str(&json).unwrap();

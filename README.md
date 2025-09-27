@@ -11,6 +11,7 @@ This tool helps you improve your prompts before sending them to AI models. It ca
 - Adjust tone and style
 - Support different languages
 - Provide quality assurance
+- Sequential thinking for step-by-step reasoning
 
 ## Quick Start
 
@@ -36,6 +37,8 @@ This tool helps you improve your prompts before sending them to AI models. It ca
    export OPENROUTER_API_KEY=your_api_key_here
    # Optional: set model preference
    export OPENROUTER_MODEL=openrouter/auto
+   # Optional: enable sequential thinking by default
+   export ENABLE_SEQUENTIAL_THINKING=true
    ```
 
 4. **Run the server:**
@@ -50,30 +53,21 @@ This tool helps you improve your prompts before sending them to AI models. It ca
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"enhance_prompt","arguments":{"prompt":"write code for fibonacci"}}}' | cargo run --quiet --
 ```
 
-### Advanced Enhancement
+### Sequential Thinking Enhancement
+For complex problems that benefit from step-by-step reasoning:
 ```bash
-echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"enhance_prompt","arguments":{"prompt":"explain quantum physics","goal":"make it simple","style":"concise","tone":"friendly","audience":"students"}}}' | cargo run --quiet --
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"enhance_prompt","arguments":{"prompt":"solve this coding problem","goal":"provide step-by-step solution","enable_sequential_thinking":true,"thought_count":3}}}' | cargo run --quiet --
+```
+
+### Controlling Sequential Thinking via Environment Variable
+You can enable sequential thinking by default for all requests:
+```bash
+export ENABLE_SEQUENTIAL_THINKING=true
+# Now all prompts will use sequential thinking unless explicitly disabled
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"enhance_prompt","arguments":{"prompt":"complex problem"}}}' | cargo run --quiet --
 ```
 
 ## Integration
-
-### With Claude Desktop
-Add this to your Claude Desktop config:
-
-```json
-{
-  "mcpServers": {
-    "prompt-enhancer": {
-      "command": "cargo",
-      "args": ["run", "--quiet", "--release"],
-      "env": {
-        "OPENROUTER_API_KEY": "your_api_key_here"
-      }
-    }
-  }
-}
-```
-
 ### With Windsurf
 Update your MCP config file:
 
@@ -84,7 +78,8 @@ Update your MCP config file:
       "command": "/path/to/mcp-prompt-server/target/release/mcp-prompt-server",
       "args": ["--log-level", "info"],
       "env": {
-        "OPENROUTER_API_KEY": "your_api_key_here"
+        "OPENROUTER_API_KEY": "your_api_key_here",
+        "ENABLE_SEQUENTIAL_THINKING": "true"
       }
     }
   }
@@ -98,6 +93,7 @@ Update your MCP config file:
 - **Fallback Support**: Works even when AI services are unavailable
 - **Flexible Options**: Customize enhancement with goals, styles, tones, and more
 - **Multi-language Support**: Enhance prompts in different languages
+- **Sequential Thinking**: Enable step-by-step reasoning for complex problem-solving
 
 ## Command Line Options
 
@@ -110,6 +106,7 @@ Update your MCP config file:
 - `OPENROUTER_MODEL`: Optional model selection (default: openrouter/auto)
 - `OPENROUTER_REFERER`: Optional, recommended for routing
 - `OPENROUTER_TITLE`: Optional, recommended for routing
+- `ENABLE_SEQUENTIAL_THINKING`: Enable sequential thinking by default (true/false, default: true)
 
 ## Testing
 
@@ -132,10 +129,13 @@ anytra/
 │   │   ├── models.rs     # Data structures
 │   │   ├── llm.rs        # AI provider interface
 │   │   ├── validation.rs # Quality checks
-│   │   └── fewshot.rs    # Example prompts
+│   │   ├── fewshot.rs    # Example prompts
+│   │   └── sequential_thinking.rs # Sequential thinking logic
 │   ├── usecases/         # Application logic
 │   │   └── enhance_prompt.rs
 │   ├── infrastructure/   # External services
+│   │   ├── config.rs     # Environment configuration
+│   │   ├── logger.rs     # Logging setup
 │   │   └── providers/
 │   │       └── openrouter.rs
 │   └── interface/        # MCP server
@@ -144,3 +144,5 @@ anytra/
 ├── Cargo.toml
 └── README.md
 ```
+
+

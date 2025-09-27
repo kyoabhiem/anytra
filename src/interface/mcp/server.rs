@@ -64,6 +64,8 @@ struct EnhanceArgs {
     #[serde(default)] level: Option<u8>,
     #[serde(default)] audience: Option<String>,
     #[serde(default)] language: Option<String>,
+    #[serde(default)] enable_sequential_thinking: Option<bool>,
+    #[serde(default)] thought_count: Option<u32>,
 }
 
 pub async fn run_stdio_server(usecase: EnhancePrompt, shutdown_timeout: Duration) -> anyhow::Result<()> {
@@ -153,7 +155,9 @@ async fn handle_request(usecase: &EnhancePrompt, req: JsonRpcRequest) -> JsonRpc
                         "tone": { "type": ["string", "null"], "description": "Tone (neutral, persuasive, etc.)" },
                         "level": { "type": ["integer", "null"], "minimum": 1, "maximum": 5, "description": "Enhancement strength 1-5" },
                         "audience": { "type": ["string", "null"], "description": "Target audience" },
-                        "language": { "type": ["string", "null"], "description": "Output language, e.g., en, id" }
+                        "language": { "type": ["string", "null"], "description": "Output language, e.g., en, id" },
+                        "enable_sequential_thinking": { "type": ["boolean", "null"], "description": "Enable sequential thinking for step-by-step reasoning" },
+                        "thought_count": { "type": ["integer", "null"], "description": "Number of thoughts to generate (default: 3)" }
                     }
                 }),
             };
@@ -170,7 +174,7 @@ async fn handle_request(usecase: &EnhancePrompt, req: JsonRpcRequest) -> JsonRpc
                     let args: Result<EnhanceArgs, _> = serde_json::from_value(p.arguments);
                     match args {
                         Ok(a) => {
-                            let opt = EnhancementOptions { goal: a.goal, style: a.style, tone: a.tone, level: a.level, audience: a.audience, language: a.language };
+                            let opt = EnhancementOptions { goal: a.goal, style: a.style, tone: a.tone, level: a.level, audience: a.audience, language: a.language, enable_sequential_thinking: a.enable_sequential_thinking, thought_count: a.thought_count };
                             let res = usecase.execute(Prompt { text: a.prompt }, opt).await;
                             match res {
                                 Ok(EnhancedPrompt { text, rationale: _, .. }) => JsonRpcResponse {
@@ -212,8 +216,27 @@ mod tests {
     use super::*;
     use crate::domain::llm::{LLMError, LLMProvider};
     use crate::domain::models::{EnhancedPrompt, EnhancementOptions, Prompt};
+    use crate::infrastructure::config::{Config, OpenRouterConfig, SequentialThinkingConfig, LoggingConfig};
     use async_trait::async_trait;
     use serde_json::json;
+
+    // Helper function to create test config
+    fn create_test_config() -> Config {
+        Config {
+            openrouter: OpenRouterConfig {
+                api_key: "test-key".to_string(),
+                model: "test-model".to_string(),
+                referer: None,
+                title: None,
+            },
+            sequential_thinking: SequentialThinkingConfig {
+                default_enabled: false, // Disable for tests unless explicitly needed
+            },
+            logging: LoggingConfig {
+                level: "info".to_string(),
+            },
+        }
+    }
 
     struct MockProvider;
 
@@ -304,6 +327,8 @@ mod tests {
             level: Some(3),
             audience: None,
             language: Some("en".to_string()),
+            enable_sequential_thinking: None,
+            thought_count: None,
         };
 
         assert_eq!(args.prompt, "Test prompt");
@@ -313,12 +338,15 @@ mod tests {
         assert_eq!(args.level, Some(3));
         assert!(args.audience.is_none());
         assert_eq!(args.language.as_deref(), Some("en"));
+        assert!(args.enable_sequential_thinking.is_none());
+        assert!(args.thought_count.is_none());
     }
 
     #[tokio::test]
     async fn test_handle_initialize() {
         let provider = Box::new(MockProvider);
-        let usecase = EnhancePrompt::new(provider);
+        let config = create_test_config();
+        let usecase = EnhancePrompt::new(provider, config);
         let req = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: Some(json!(1)),
@@ -343,7 +371,8 @@ mod tests {
     #[tokio::test]
     async fn test_handle_tools_list() {
         let provider = Box::new(MockProvider);
-        let usecase = EnhancePrompt::new(provider);
+        let config = create_test_config();
+        let usecase = EnhancePrompt::new(provider, config);
         let req = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: Some(json!(2)),
@@ -365,7 +394,7 @@ mod tests {
                     if let Some(tool) = tools_array.get(0) {
                         assert_eq!(tool.get("name").unwrap(), "enhance_prompt");
                         assert!(tool.get("description").is_some());
-                        assert!(tool.get("input_schema").is_some());
+                        assert!(tool.get("inputSchema").is_some());
                     }
                 }
             }
@@ -375,7 +404,8 @@ mod tests {
     #[tokio::test]
     async fn test_handle_tools_call_success() {
         let provider = Box::new(MockProvider);
-        let usecase = EnhancePrompt::new(provider);
+        let config = create_test_config();
+        let usecase = EnhancePrompt::new(provider, config);
         let req = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: Some(json!(3)),
@@ -413,7 +443,8 @@ mod tests {
     #[tokio::test]
     async fn test_handle_tools_call_error() {
         let provider = Box::new(FailingProvider);
-        let usecase = EnhancePrompt::new(provider);
+        let config = create_test_config();
+        let usecase = EnhancePrompt::new(provider, config);
         let req = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: Some(json!(4)),
@@ -452,7 +483,8 @@ mod tests {
     #[tokio::test]
     async fn test_handle_unknown_tool() {
         let provider = Box::new(MockProvider);
-        let usecase = EnhancePrompt::new(provider);
+        let config = create_test_config();
+        let usecase = EnhancePrompt::new(provider, config);
         let req = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: Some(json!(5)),
@@ -479,7 +511,8 @@ mod tests {
     #[tokio::test]
     async fn test_handle_ping() {
         let provider = Box::new(MockProvider);
-        let usecase = EnhancePrompt::new(provider);
+        let config = create_test_config();
+        let usecase = EnhancePrompt::new(provider, config);
         let req = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: Some(json!(6)),
@@ -502,7 +535,8 @@ mod tests {
     #[tokio::test]
     async fn test_handle_shutdown() {
         let provider = Box::new(MockProvider);
-        let usecase = EnhancePrompt::new(provider);
+        let config = create_test_config();
+        let usecase = EnhancePrompt::new(provider, config);
         let req = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: Some(json!(7)),
@@ -525,7 +559,8 @@ mod tests {
     #[tokio::test]
     async fn test_handle_unknown_method() {
         let provider = Box::new(MockProvider);
-        let usecase = EnhancePrompt::new(provider);
+        let config = create_test_config();
+        let usecase = EnhancePrompt::new(provider, config);
         let req = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: Some(json!(8)),
@@ -549,7 +584,8 @@ mod tests {
     #[tokio::test]
     async fn test_handle_mcp_initialize() {
         let provider = Box::new(MockProvider);
-        let usecase = EnhancePrompt::new(provider);
+        let config = create_test_config();
+        let usecase = EnhancePrompt::new(provider, config);
         let req = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: Some(json!(9)),
@@ -597,5 +633,7 @@ mod tests {
         assert!(args.tone.is_none());
         assert!(args.audience.is_none());
         assert!(args.language.is_none());
+        assert!(args.enable_sequential_thinking.is_none());
+        assert!(args.thought_count.is_none());
     }
 }
